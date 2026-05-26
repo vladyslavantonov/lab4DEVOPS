@@ -1,80 +1,89 @@
 # Модель: Туризм: Розподіл завантаження номерів у готелі (на прикладі Marriott, Hyatt)
 # Автор: Антонов В. В., група АІ-235
 
+import os
 import numpy as np
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# Зчитування змінних середовища Docker (з дефолтними значеннями)
+STUDENT_NAME = os.getenv("STUDENT_NAME", "Антонов В. В.")
+GROUP_NAME = os.getenv("GROUP", "АІ-235")
+MODE = os.getenv("MODE", "comfort")  # Твій варіант: непарний -> comfort
 
 class HotelRevenueOptimizer:
-    def __init__(self, rooms=200, price=140, penalty=250, mean_demand=210, std_dev=15):
-        self.N = rooms          # Кількість номерів у готелі
-        self.C = price          # Вартість номера за ніч
-        self.W = penalty        # Штраф за відмову у заселенні клієнта
-        self.mean_d = mean_demand
-        self.std_d = std_dev
+    def __init__(self):
+        self.N = 200          # Кількість номерів
+        self.mean_d = 210     # Середній попит
+        self.std_d = 15       # Відхилення
+        
+        # Логіка варіанту: змінюємо базові параметри залежно від екологічного чи комфорт режиму
+        if MODE.lower() == "comfort":
+            self.C = 220      # Вища вартість номера у комфорт-класі
+            self.W = 350      # Більший штраф за відмову VIP-клієнту
+        else:
+            self.C = 140      # Стандартна ціна (режим eco)
+            self.W = 250      # Стандартний штраф
         
     def simulate_revenue(self, O, num_simulations=1000):
-        """Моделювання очікуваного доходу при заданому рівні овердокінгу O"""
-        np.random.seed(42)  # Фіксація для відтворюваності результатів
+        np.random.seed(42)
         demands = np.random.normal(self.mean_d, self.std_d, num_simulations).astype(int)
-        
         total_revenue = 0
         total_rejections = 0
         
         for d in demands:
-            # Загальна кількість прийнятих бронювань із врахуванням ліміту овердокінгу
             booked = min(d, self.N + O)
-            
-            # Фактичний заїзд та відмови
             arrivals = min(booked, self.N)
             rejections = max(0, booked - self.N)
-            
-            # Фінансовий результат дня
             revenue = (self.C * arrivals) - (self.W * rejections)
             total_revenue += revenue
             total_rejections += rejections
             
-        avg_revenue = total_revenue / num_simulations
-        rejection_rate = (total_rejections / (demands.sum() + 1e-5)) * 100
-        return avg_revenue, rejection_rate
+        return total_revenue / num_simulations, (total_rejections / (demands.sum() + 1e-5)) * 100
 
-    def optimize_gradient_descent(self, start_O=0, lr=0.1, epochs=50):
-        """Чисельний метод градієнтного спуску для пошуку оптимального O"""
-        O = float(start_O)
-        for epoch in range(epochs):
-            # Наближене обчислення похідної (чисельне диференціювання)
+    def optimize_gradient_descent(self):
+        O = 0.0
+        for _ in range(50):
             rev_current, _ = self.simulate_revenue(int(round(O)))
             rev_next, _ = self.simulate_revenue(int(round(O + 1)))
-            
             derivative = rev_next - rev_current
-            
-            # Рух у напрямку градієнта (максимізація, тому знак +)
-            O_new = O + lr * derivative
-            O_new = max(0, min(O_new, 50))  # Обмеження розумного ліміту овердокінгу
-            
-            if abs(O_new - O) < 0.01:
-                break
+            O_new = max(0, min(O + 0.1 * derivative, 50))
+            if abs(O_new - O) < 0.01: break
             O = O_new
-            
         return int(round(O))
 
+# Створення легковагого вебсервера всередині контейнера
+class WebServerHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        
+        optimizer = HotelRevenueOptimizer()
+        base_rev, base_reject = optimizer.simulate_revenue(O=0)
+        optimal_O = optimizer.optimize_gradient_descent()
+        opt_rev, opt_reject = optimizer.simulate_revenue(O=optimal_O)
+        
+        # Формуємо відповідь, яку буде видно в браузері або консолі
+        response = f"=== DOCKER CONTAINER ACTIVE ===\n"
+        response += f"Модель розгорнув: {STUDENT_NAME}\n"
+        response += f"Група: {GROUP_NAME}\n"
+        response += f"Контейнеризований режим (Варіант): {MODE.upper()}\n"
+        response += "="*50 + "\n"
+        response += f"Базова стратегія (O=0):  Дохід = {base_rev:,.2f}$, Відмови = {base_reject:.2f}%\n"
+        response += f"Оптимальна (Градієнт): Дохід = {opt_rev:,.2f}$, Оптимальний овердокінг O* = {optimal_O}\n"
+        response += f"Ефект чисельної оптимізації: +{opt_rev - base_rev:,.2f}$\n"
+        response += "="*50 + "\n"
+        
+        self.wfile.write(response.encode('utf-8'))
+
 if __name__ == "__main__":
-    print("="*65)
-    print("  ОПТИМІЗАЦІЯ РІВНЯ ОВЕРДОКІНГУ В НОМЕРНОМУ ФОНДІ ГОТЕЛЮ")
-    print("="*65)
+    print(f"[*] Запуск моделі для студента: {STUDENT_NAME} ({GROUP_NAME})")
+    print(f"[*] Активовано режим: {MODE}")
     
-    optimizer = HotelRevenueOptimizer()
-    
-    # 1. Базова стратегія (Без овердокінгу, O = 0)
-    base_rev, base_reject = optimizer.simulate_revenue(O=0)
-    
-    # 2. Оптимальна стратегія (Пошук через Градієнтний Спуск)
-    optimal_O = optimizer.optimize_gradient_descent()
-    opt_rev, opt_reject = optimizer.simulate_revenue(O=optimal_O)
-    
-    # Виведення результатів
-    print(f"{'Стратегія':<25} | {'Сумарний Дохід':<15} | {'Оптимальний O*':<14} | {'Відсоток Відмов'}")
-    print("-"*65)
-    print(f"{'Базова (O = 0)':<25} | {base_rev:<13,.2f}$ | {0:<14} | {base_reject:.2f}%")
-    print(f"{'Оптимальна (GD)':<25} | {opt_rev:<13,.2f}$ | {optimal_O:<14} | {opt_reject:.2f}%")
-    print("-"*65)
-    print(f"Висновок: Оптимізація за допомогою Градієнтного Спуску збільшила дохід на {opt_rev - base_rev:,.2f}$.")
-    print("="*65)# ???????? ????????? ????????? 
+    server_address = ('0.0.0.0', 5000)
+    httpd = HTTPServer(server_address, WebServerHandler)
+    print("[+] Сервер успішно запущено у контейнері на порту 5000...")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        httpd.server_close()
